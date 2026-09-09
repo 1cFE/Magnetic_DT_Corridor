@@ -1,0 +1,798 @@
+diff --git a/src/costingfe/data/defaults/costing_constants.yaml b/src/costingfe/data/defaults/costing_constants.yaml
+index bdd0239..6e0f0b9 100644
+--- a/src/costingfe/data/defaults/costing_constants.yaml
++++ b/src/costingfe/data/defaults/costing_constants.yaml
+@@ -83,6 +83,7 @@ conductor_cost_copper: 1.0           # copper $/kA-m (resistive coils use the ma
+ # 513.375 M$ exactly. See docs/account_justification/CAS22_reactor_components.md.
+ coil_markup:
+   tokamak: 3.09
++  spherical_tokamak: 3.09   # same winding complexity; the no-CS saving is in G
+   stellarator: 5.87
+   mirror: 1.7265803102296458
+   steady_frc: 2.0
+@@ -187,8 +188,11 @@ building_costs:
+   # --- Fuel-dependent, ~fixed (site footprint) ---
+   site_improvements:  {dt: 85, dd: 81, dhe3: 75, pb11: 69, scales: fixed}
+   # --- Fuel-dependent, scales with P_fus ---
+-  reactor_building:   {dt: 138, dd: 127, dhe3: 98, pb11: 81, scales: p_fus}
+-  hot_cell:           {dt: 104, dd: 78,  dhe3: 23, pb11: 0,  scales: p_fus}
++  # reactor_building/hot_cell moved from p_fus to the machine envelope; base
++  # costs rebased by the 1.2412 p_fus ratio they carried at the DT reference
++  # plant so that plant's CAS21 is unchanged.
++  reactor_building:   {dt: 171, dd: 158, dhe3: 122, pb11: 101, scales: machine}
++  hot_cell:           {dt: 129, dd: 97,  dhe3: 29, pb11: 0,  scales: machine}
+   reactor_auxiliaries: {dt: 29, dd: 25,  dhe3: 21, pb11: 17, scales: p_fus}
+   # --- Fuel-dependent, ~fixed ---
+   fuel_storage:       {dt: 9,   dd: 7,   dhe3: 3,  pb11: 1,  scales: fixed}
+@@ -205,7 +209,7 @@ building_costs:
+   onsite_ac:          {all: 12, scales: p_et}
+   cryogenics:         {all: 14, scales: fixed}
+   service_water:      {all: 9,  scales: p_th}
+-  assembly_hall:      {all: 21, scales: fixed}
++  assembly_hall:      {all: 21, scales: machine}
+ 
+ # CAS27 — Special materials: initial blanket-fill inventory.
+ # Volume-based mass build-up, keyed on blanket_fill (NOT power-scaled): an
+@@ -315,9 +319,17 @@ cap_shot_lifetime: 1.0e+8    # Shots, NOAK baseline. Sensitivity: 1e7-1e9
+ # laser_driver_type). DPSSL 205 (existing); KrF 40 (Xcimer/ASPEN-leaning,
+ # range 20-200); Nd:Glass 1000 (NIF-class). See CAS22_reactor_components.md.
+ driver_laser_per_mj: 205.0
+-driver_krf_per_mj: 40.0
++driver_krf_per_mj: 70.0   # KrF on-target, Xcimer/TRUMPF whitepaper NOAK ($60-80/J); was 40 (below their own published NOAK)
+ driver_ndglass_per_mj: 1000.0
+ 
++# Gas-laser (KrF/excimer) rep-rate BoP penalty (gas-handling that grows steeply
++# with rep: gas_laser_bop_ref_musd * (f_rep/gas_laser_rep_ref)^gas_laser_rep_exp;
++# KrF driver only). PLACEHOLDER magnitude/exponent -- UNCALIBRATED, a first-order
++# flag not a quantitative cost. See defaults.py / CAS22_reactor_components.md.
++gas_laser_bop_ref_musd: 15.0
++gas_laser_rep_ref: 1.0
++gas_laser_rep_exp: 2.0
++
+ # CAS72 laser-IFE driver scheduled replacement (per architecture).
+ # replace_frac = share of C220104; shot_lifetime = NOAK projection (shots).
+ dpssl_diode_replace_frac: 0.50
+diff --git a/src/costingfe/defaults.py b/src/costingfe/defaults.py
+index e4b8b89..640d28b 100644
+--- a/src/costingfe/defaults.py
++++ b/src/costingfe/defaults.py
+@@ -111,9 +111,9 @@ class CostingConstants:
+     # lasers since the light->fuel coupling is the drive-mode gain, not here).
+     # Projected NOAK values at a consistent optimism level (same basis as the
+     # aggressive-NOAK driver $/MJ presets); demonstrated values in parentheses.
+-    eta_source_dpssl: float = 0.15  # DPSSL (Mercury demo ~0.10; LIFE target ~0.18)
+-    eta_source_krf: float = 0.10  # KrF excimer (Electra demo ~0.07; NRL roadmap)
+-    eta_source_fiber: float = 0.20  # fiber/blue (fiber ~0.30 x IR->blue conversion)
++    eta_source_dpssl: float = 0.15  # DPSSL current/demonstrated (Mercury ~0.10-0.15); NOAK ceiling 0.18 (LIFE, 3w UV) is the corridor eta-lever target
++    eta_source_krf: float = 0.07  # KrF current (Electra demo ~0.07); NOAK ceiling 0.10 is the corridor eta-lever target
++    eta_source_fiber: float = 0.20  # fiber/blue current (~0.20); NOAK ceiling 0.25 (beam-combining + 2w) is the corridor eta-lever target
+     eta_source_ndglass: float = 0.02  # flashlamp Nd:Glass (NIF ~0.005; physics-capped)
+     # 220104: Pulsed driver capital, concept-dispatched in cas22.py C220104.
+     # Lasers, accelerators, and electromagnetic guns are costed per joule of pulse
+@@ -130,13 +130,14 @@ class CostingConstants:
+     driver_laser_per_mj: float = 205.0  # M$/MJ; optics + diodes. With the ~$5/J
+     #   C220107 cap bank the laser totals ~$210/J = aggressive DPSSL NOAK (diode
+     #   roadmap to ~$0.007/W). Published DPSSL NOAK $210-700/J, FOAK $700-1000/J.
+-    # KrF excimer (NRL Electra / Xcimer) and flashlamp Nd:Glass (NIF-class)
+-    # driver capital, $/MJ of pulse energy, selected by laser_driver_type for
+-    # LASER_IFE. KrF 40 leans to the Xcimer/ASPEN large-aperture-optics claim
+-    # (range 20-200; NRL/Sethian engineering baseline ~200). Nd:Glass 1000 from
+-    # NIF $3.5-4.2B / 1.1-1.9 MJ UV (~$2000/J facility, driver-only ~half).
+-    # See docs/account_justification/CAS22_reactor_components.md (C220104).
+-    driver_krf_per_mj: float = 40.0  # M$/MJ KrF excimer driver hardware
++    # KrF excimer (Xcimer/TRUMPF) and flashlamp Nd:Glass (NIF-class) driver
++    # capital, $/MJ of pulse energy, selected by laser_driver_type for LASER_IFE.
++    # KrF 70 = Xcimer/TRUMPF whitepaper NOAK midpoint, $/J ON TARGET ($60-80 NOAK,
++    # $100-120 FOAK; whitepaper Table 1). NRL/Sethian engineering baseline ~200;
++    # the earlier aggressive $40 sat BELOW Xcimer's own published NOAK, so lifted
++    # to the company figure. Nd:Glass 1000 from NIF $3.5-4.2B / 1.1-1.9 MJ UV
++    # (~$2000/J facility, driver-only ~half). See CAS22_reactor_components.md.
++    driver_krf_per_mj: float = 70.0  # M$/MJ KrF on-target, Xcimer whitepaper NOAK
+     # Fiber / coherent-combined blue laser (BLF / XCAN). Ported from BLF's own
+     # bracket (concept 31 analysis): fiber central ~$400/J on their CONSERVATIVE
+     # scale (their DPSSL $700-1000/J, excimer $60-80/J). On our aggressive-NOAK
+@@ -150,6 +151,27 @@ class CostingConstants:
+     driver_plasma_jet_per_mj: float = 4.0  # M$/MJ EM plasma-gun pulse energy
+     driver_staged_zpinch_per_mj: float = 1.5  # M$/MJ sheared-flow gun + gas inj.
+     driver_mag_target_per_mw: float = 3.0  # M$/MW avg power, pneumatic pistons
++    # Gas-laser (KrF/excimer) rep-rate BoP penalty. Solid-state drivers
++    # (DPSSL/fiber/Nd:Glass) are rep-independent in capital, but a gas laser must
++    # clear + re-cool the laser gas between shots (recirculation blowers, heat
++    # exchangers, hibachi-foil cooling), a duty that grows with rep because the
++    # inter-shot clearing window is ~1/f_rep:
++    #   gas_BoP [M$] = gas_laser_bop_ref_musd * (f_rep / gas_laser_rep_ref)^exp
++    # Applied to LaserDriverType.KRF only.
++    #
++    # !!! PLACEHOLDER VALUES -- UNCALIBRATED. The magnitude (15 M$ @ 1 Hz) and the
++    # exponent (2.0) are NOT derived from first principles and NOT fitted to data:
++    # they were chosen so the penalty is ~negligible at the sub-Hz big-shot design
++    # point and steep at high rep. First-principles scaling is genuinely ambiguous
++    # (~f_rep^0.5 to f_rep^3 depending on aperture/volume/velocity assumptions), and
++    # no large-aperture rep-rated KrF fusion plant exists to anchor the cost -- NRL
++    # Electra demonstrated ~5 Hz KrF only at sub-kJ scale, so this curve may bite
++    # too early. Treat as a FIRST-ORDER FLAG that gas lasers cannot cheaply rep-rate
++    # (why KrF designs run sub-Hz / big-shot), NOT a quantitative cost. Recalibrate
++    # or replace the magnitude/exponent before relying on the absolute numbers.
++    gas_laser_bop_ref_musd: float = 15.0  # M$ gas-handling BoP at rep_ref (KrF)
++    gas_laser_rep_ref: float = 1.0  # Hz reference rep for the penalty
++    gas_laser_rep_exp: float = 2.0  # duty ~ f_rep^exp (blower + thermal)
+     # MAGLIF's main driver is the electrical Z-pinch, costed in C220107 on a $/J
+     # basis. Its C220104 carries only laser preheat, costed per joule of preheat
+     # pulse energy (same DPSSL class as the IFE driver). Concepts that magnetize and
+@@ -256,6 +278,7 @@ class CostingConstants:
+     drive_coupling_direct: float = 1.0  # reference (direct-drive / fast-ignition)
+     drive_coupling_hybrid: float = 0.75  # combined / Xcimer-class drive
+     drive_coupling_indirect: float = 0.5  # hohlraum X-ray drive (~2x penalty)
++    drive_coupling_fast_ignition: float = 1.5  # FI gain credit: ~1.5x central-hot-spot at same driver energy (Tabak 1994; Atzeni). Compression + separate igniter -> no hot-spot energy tax. Default for any D-T fast-ignition concept.
+ 
+     # Size-dependent gain curve (on by default for laser via rhoR_ref_g_cm2 +
+     # e_rhoR_ref_mj in the YAML): burn-up phi = rhoR/(rhoR + H_B), rhoR ~ E^(1/3).
+@@ -415,6 +438,34 @@ class CostingConstants:
+     # Each entry has fuel keys (dt/dd/dhe3/pb11 or 'all') + 'scales' key
+     building_costs: dict[str, dict] = None  # loaded from YAML
+ 
++    # CAS21 — machine-enclosing buildings (reactor hall, hot cell, assembly hall)
++    # scale with the volume they must enclose, not with fusion power. Without
++    # this a large low-field machine gets a CHEAPER reactor building than a
++    # compact high-field one purely because its recirculating power is lower.
++    # The envelope is the bioshield-outer volume from the radial build, so it is
++    # defined identically for every concept the geometry layer handles.
++    # Reference is the 1 GWe D-T REBCO tokamak design point, so the multiplier is
++    # exactly 1.0 there and the YAML building costs keep their calibration.
++    # 6465 m^3 is the bioshield envelope of the reference 1 GWe D-T REBCO
++    # tokamak (R0 6.041 m, a 2.014 m, kappa 1.85 -- the solved design point the
++    # tokamak YAML carries), so the multiplier is exactly 1.0 there.
++    ref_machine_envelope_m3: float = 6465.0
++    # Civil structures scale sub-linearly with enclosed volume (process-plant
++    # capacity-factor exponents run 0.6-0.8).
++    building_envelope_exponent: float = 0.7
++
++    # CAS22.03.02 — cryoplant. Specific power (wall-plug W per W of cooling) is
++    # the Carnot factor (T_amb - T)/T divided by the fraction of Carnot a large
++    # plant achieves. Large helium plants reach ~28% of Carnot, which reproduces
++    # the reported state of the art: ~250 W/W at 5 K, ~50 W/W at 20 K, ~20 W/W at
++    # 40-80 K. Green & Byrns scale refrigeration to an equivalent 4.5 K capacity
++    # by the same Carnot ratio before applying a 0.7 power law -- the exponent
++    # C220302 already uses. Sources: Strobridge NBS TN-655 (1974); Green & Byrns,
++    # "Estimating the Cost of Superconducting Magnets and the Refrigerators
++    # Needed to Keep Them Cold"; Radebaugh, NIST Review of Refrigeration Methods.
++    cryo_carnot_efficiency: float = 0.28
++    cryo_ambient_temp_k: float = 300.0
++
+     # 220103 — per-concept SC coil manufacturing markup (conductor -> installed
+     # magnet system: winding, quench protection, structural casing, cryostat,
+     # testing). Keyed by ConfinementConcept.value. Loaded from YAML; this is a
+@@ -725,6 +776,18 @@ MAGNET_TABLE: dict[str, MagnetProperties] = {
+ }
+ 
+ 
++def cryo_specific_power(cryo_temp_k, ambient_k=300.0, frac_carnot=0.28):
++    """Wall-plug watts per watt of cooling at `cryo_temp_k`.
++
++    (T_amb - T)/T is the inverse Carnot COP; dividing by the fraction of Carnot
++    a real plant achieves gives the specific power. Returns 0.0 for a warm
++    (normal-conducting) coil, which carries no cryoplant at all.
++    """
++    if cryo_temp_k >= ambient_k:
++        return 0.0
++    return (ambient_k - cryo_temp_k) / (cryo_temp_k * frac_carnot)
++
++
+ def get_magnet_properties(coil_material: str) -> MagnetProperties:
+     """Look up magnet properties by conductor selection. Raises KeyError on
+     an unknown material rather than substituting a default."""
+diff --git a/src/costingfe/layers/cas22.py b/src/costingfe/layers/cas22.py
+index ed4d271..56ddfaf 100644
+--- a/src/costingfe/layers/cas22.py
++++ b/src/costingfe/layers/cas22.py
+@@ -60,6 +60,11 @@ _COIL_DEFAULTS = {
+     # `stationary_lift_coil_fraction * floating_with_markup` (default 0.10).
+     # This entry is kept so concept-level table lookups (e.g. test_cas22_n_coils,
+     # downstream tooling) don't KeyError on DIPOLE.
++    # Spherical tokamak: same toroidal geometry factor family as a conventional
++    # tokamak, but with NO central solenoid. The tokamak G = 4 pi^2 is an
++    # empirical TF+CS+PF total-system fit, so removing the CS takes a share of
++    # the conductor out. 0.80 is an estimate of the retained fraction, not a fit.
++    ConfinementConcept.SPHERICAL_TOKAMAK: {"path_factor": 0.80, "n_coils": 0},
+     ConfinementConcept.DIPOLE: {"path_factor": 1.0, "n_coils": 1},
+     # Steady-state FRC (beam-driven, e.g. TAE; RMF-driven PFRC) is a linear,
+     # open-field-line device like a mirror: external formation + mirror/end-plug
+@@ -133,7 +138,8 @@ def _compute_geometry_factor(
+         ConfinementConcept.DIPOLE,
+     ):
+         return n_coils * 4 * math.pi
+-    elif concept == ConfinementConcept.STELLARATOR:
++    elif concept in (ConfinementConcept.STELLARATOR,
++                     ConfinementConcept.SPHERICAL_TOKAMAK):
+         return 4 * math.pi**2 * path_factor
+     else:  # tokamak (default)
+         return 4 * math.pi**2
+@@ -407,6 +413,7 @@ def cas22_reactor_plant_equipment(
+             G = _compute_geometry_factor(concept, path_factor, n_coils_eff)
+             if concept in (
+                 ConfinementConcept.TOKAMAK,
++                ConfinementConcept.SPHERICAL_TOKAMAK,
+                 ConfinementConcept.STELLARATOR,
+             ):
+                 # Toroidal: bilinear in major radius and coil-bore radius.
+@@ -490,6 +497,30 @@ def cas22_reactor_plant_equipment(
+             + cc.laser_preheat_per_mj * e_preheat_mj
+         )
+ 
++    # -----------------------------------------------------------------------
++    # Gas-laser rep-rate BoP penalty (KrF/excimer only).
++    # A KrF driver must clear + re-cool the laser gas between shots (fast
++    # recirculation blowers, heat exchangers, hibachi-foil cooling). Unlike a
++    # solid-state driver -- whose C220104 above is set by aperture/diode count
++    # and is rep-INDEPENDENT -- this gas-handling BoP grows steeply with rep:
++    # the inter-shot clearing window is ~1/f_rep, so flow velocity ~ f_rep and
++    # blower/thermal duty ~ f_rep^gas_laser_rep_exp. This is why KrF designs run
++    # sub-Hz / big-shot rather than rep-rating. The magnitude and exponent are
++    # UNCALIBRATED PLACEHOLDERS (see defaults.py gas_laser_bop_ref_musd) -- a
++    # first-order flag that gas lasers cannot cheaply rep-rate, NOT a quantitative
++    # cost; gated to gas lasers, fully tunable.
++    # See docs/account_justification/CAS22_reactor_components.md (gas-laser BoP).
++    # -----------------------------------------------------------------------
++    gas_recirc = 0.0
++    if (
++        concept == ConfinementConcept.LASER_IFE
++        and laser_driver_type == LaserDriverType.KRF
++        and f_rep > 0.0
++    ):
++        gas_recirc = cc.gas_laser_bop_ref_musd * (
++            f_rep / cc.gas_laser_rep_ref
++        ) ** cc.gas_laser_rep_exp
++
+     # -----------------------------------------------------------------------
+     # 220105: Primary Structure — gravity supports, thermal shields,
+     # inter-coil structure, machine base.
+@@ -651,6 +682,7 @@ def cas22_reactor_plant_equipment(
+         + c220102
+         + c220103
+         + c220104
++        + gas_recirc
+         + c220105
+         + c220106
+         + c220107
+@@ -735,6 +767,7 @@ def cas22_reactor_plant_equipment(
+         + c220102
+         + c220103
+         + c220104
++        + gas_recirc
+         + c220105
+         + c220106
+         + c220107
+@@ -755,6 +788,7 @@ def cas22_reactor_plant_equipment(
+         "C220102": c220102,
+         "C220103": c220103,
+         "C220104": c220104,
++        "C220104_gas_recirc": gas_recirc,
+         "C220105": c220105,
+         "C220106": c220106,
+         # Informational split of C220106 (vessel shell vs gas-load pumping).
+diff --git a/src/costingfe/layers/costs.py b/src/costingfe/layers/costs.py
+index a87bd89..a2e38cc 100644
+--- a/src/costingfe/layers/costs.py
++++ b/src/costingfe/layers/costs.py
+@@ -79,7 +79,8 @@ def cas10_preconstruction(cc, p_net, n_mod, fuel, noak):
+     return subtotal + contingency
+ 
+ 
+-def cas21_buildings(cc, p_et, p_the, p_th, p_fus, n_mod, fuel, coil_material):
++def cas21_buildings(cc, p_et, p_the, p_th, p_fus, n_mod, fuel, coil_material,
++                    machine_envelope_m3=None):
+     """CAS21: Buildings. Returns M$.
+ 
+     Returned raw, without contingency: CAS21 is part of the CAS20 series, so
+@@ -126,6 +127,19 @@ def cas21_buildings(cc, p_et, p_the, p_th, p_fus, n_mod, fuel, coil_material):
+         # Administration is staff-driven; staff (and so the building) scales as
+         # P^0.5, matching the staffing accounts CAS40/CAS70.
+         "staff": jnp.sqrt(p_et_tot / P_ET_REF),
++        # Buildings that must physically enclose the machine (reactor hall, hot
++        # cell, assembly hall) scale with the bioshield envelope volume, not with
++        # power. Power scaling gets this backwards: a large low-field machine
++        # would otherwise buy a CHEAPER reactor building than a compact
++        # high-field one, because its recirculating power is lower. Envelope
++        # scales per module and then by module count.
++        "machine": (
++            1.0
++            if machine_envelope_m3 is None
++            else n_mod
++            * (machine_envelope_m3 / cc.ref_machine_envelope_m3)
++            ** cc.building_envelope_exponent
++        ),
+     }
+ 
+     total = 0.0
+diff --git a/src/costingfe/layers/geometry.py b/src/costingfe/layers/geometry.py
+index 890f5c1..105b5d2 100644
+--- a/src/costingfe/layers/geometry.py
++++ b/src/costingfe/layers/geometry.py
+@@ -35,6 +35,12 @@ class RadialBuild:
+     gap1_t: float = 0.10
+     vessel_t: float = 0.10
+     coil_t: float = 0.30  # TF coil (MFE only, 0 for IFE)
++    # Inboard build override [m]. None = symmetric (blanket + ht_shield +
++    # structure + vessel on both sides). A spherical tokamak sets a thin
++    # shield-only inboard stack; the field calc uses it and the breeder volume
++    # below drops the inboard share.
++    inboard_build_t: float = None
++    inboard_breeder: bool = True
+     gap2_t: float = 0.10
+     lt_shield_t: float = 0.15
+     bioshield_t: float = 1.00
+@@ -63,6 +69,12 @@ class Geometry:
+     vessel_or: float  # Outer radius of vessel
+     bioshield_or: float  # Outer radius of bioshield
+ 
++    # Volume the machine occupies out to the bioshield, in the same geometry the
++    # component volumes use (torus / cylinder / sphere per concept). This is what
++    # the reactor hall, hot cell and assembly hall have to enclose, so CAS21
++    # scales those buildings on it instead of on fusion power.
++    envelope_vol: float = 0.0
++
+ 
+ def _torus_shell_volume(R: float, r_in: float, r_out: float, kappa: float) -> float:
+     """Volume of a toroidal shell with elongation.
+@@ -208,10 +220,22 @@ def compute_geometry(rb: RadialBuild, concept: ConfinementConcept) -> Geometry:
+ 
+         firstwall_area = 4 * math.pi * vacuum_or**2
+ 
++    # With no inboard breeder, the blanket occupies only the outboard side. For a
++    # torus the volume element goes as R, so integrating (R0 + r cos t) over the
++    # inboard half gives an inboard share of  1/2 - r_bar/(pi R0)  -- less than
++    # half, because the inboard side sits at smaller major radius.
++    blanket_keep = 1.0
++    if not rb.inboard_breeder and family == ConfinementFamily.STEADY_STATE and rb.R0 > 0:
++        r_bar = 0.5 * (firstwall_or + blanket_or)
++        blanket_keep = 1.0 - max(0.0, 0.5 - r_bar / (math.pi * rb.R0))
++
+     return Geometry(
++        # vol() is already the concept-correct volume function, so evaluating it
++        # from the axis out to the bioshield gives the enclosed envelope.
++        envelope_vol=vol(0, bioshield_or),
+         plasma_vol=vol(0, plasma_or),
+         firstwall_vol=vol(vacuum_or, firstwall_or),
+-        blanket_vol=vol(firstwall_or, blanket_or),
++        blanket_vol=vol(firstwall_or, blanket_or) * blanket_keep,
+         reflector_vol=vol(blanket_or, reflector_or),
+         ht_shield_vol=vol(reflector_or, ht_shield_or),
+         structure_vol=vol(ht_shield_or, structure_or),
+diff --git a/src/costingfe/layers/tokamak.py b/src/costingfe/layers/tokamak.py
+index 622e3cc..b359088 100644
+--- a/src/costingfe/layers/tokamak.py
++++ b/src/costingfe/layers/tokamak.py
+@@ -43,6 +43,7 @@ KEV_TO_J = _EV * 1e3  # 1 keV -> Joules
+ _GSS_ITERS = 40  # Golden-section iterations to localize the optimum T_e
+ _BETA_PENALTY = 1.0e6  # Penalty slope for beta-limit violations [MW per %·m·T/MA]
+ _R0_BISECT_ITERS = 60  # Bisection iterations to locate the target-power radius
++_QN_BISECT_ITERS = 40  # Bisection iterations for f_GW against the wall-load cap
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -186,7 +187,8 @@ def resistive_recirc_power(recirc_power_factor, B0, R0, a, kappa):
+     return recirc_power_factor * B0**2 * _plasma_volume(R0, a, kappa)
+ 
+ 
+-def b0_from_radial_build(R0, a, b_max, blanket_t, ht_shield_t, structure_t, vessel_t):
++def b0_from_radial_build(R0, a, b_max, blanket_t, ht_shield_t, structure_t,
++                         vessel_t, inboard_build_t=None):
+     """On-axis toroidal field [T] from the peak-field ceiling and the inboard
+     radial build.
+ 
+@@ -196,7 +198,11 @@ def b0_from_radial_build(R0, a, b_max, blanket_t, ht_shield_t, structure_t, vess
+     the major radius of the inboard coil leg. Fixed-meter inboard layers penalize
+     small machines on field.
+     """
+-    inboard = blanket_t + ht_shield_t + structure_t + vessel_t
++    # A spherical tokamak buys its field by NOT putting a breeder blanket on the
++    # inboard side: inboard_build_t overrides the symmetric build with a thin
++    # shield-only stack. TBR is then closed on the outboard blanket alone.
++    inboard = (blanket_t + ht_shield_t + structure_t + vessel_t
++               if inboard_build_t is None else inboard_build_t)
+     r_coil_inner = R0 - a - inboard
+     # Floor at a small positive field: when the fixed-meter inboard build exceeds
+     # the available radius (very small R0), r_coil_inner goes negative, which is
+@@ -826,6 +832,20 @@ def derive_radial_build(fuel, **overrides):
+ # ---------------------------------------------------------------------------
+ # Sizing: net electric at a fixed R0 (inner operating point)
+ # ---------------------------------------------------------------------------
++def _fwd_at(R0, a, kappa, B0, T_e, f_GW, params, fuel, M_ion, base_frac_kw):
++    """One 0D forward pass at an explicit Greenwald fraction."""
++    return tokamak_0d_forward(
++        R=R0, a=a, kappa=kappa, B=B0, q95=params["q95"], f_GW=f_GW, T_e=T_e,
++        p_input=params["p_input"], fuel=fuel, M_ion=M_ion,
++        Z_eff=params["Z_eff"], lambda_q=params["lambda_q"],
++        dhe3_dd_frac_pin=params["dhe3_dd_frac_pin"],
++        T_i_over_T_e=params["T_i_over_T_e"],
++        dhe3_fuel_ratio=params["dhe3_fuel_ratio"],
++        pb11_fuel_ratio=params["pb11_fuel_ratio"],
++        **base_frac_kw,
++    )
++
++
+ def _net_at_R0_T(R0, T_e, params, fuel):
+     """Net electric power [MW] at fixed R0 and operating temperature T_e.
+ 
+@@ -853,6 +873,7 @@ def _net_at_R0_T(R0, T_e, params, fuel):
+         params["ht_shield_t"],
+         params["structure_t"],
+         params["vessel_t"],
++        params.get("inboard_build_t"),
+     )
+ 
+     base_frac_kw = dict(
+@@ -865,25 +886,40 @@ def _net_at_R0_T(R0, T_e, params, fuel):
+     )
+ 
+     M_ion = params["M_ion"]
+-    ps = tokamak_0d_forward(
+-        R=R0,
+-        a=a,
+-        kappa=kappa,
+-        B=B0,
+-        q95=params["q95"],
+-        f_GW=params["f_GW"],
+-        T_e=T_e,
+-        p_input=params["p_input"],
+-        fuel=fuel,
+-        M_ion=M_ion,
+-        Z_eff=params["Z_eff"],
+-        lambda_q=params["lambda_q"],
+-        dhe3_dd_frac_pin=params["dhe3_dd_frac_pin"],
+-        T_i_over_T_e=params["T_i_over_T_e"],
+-        dhe3_fuel_ratio=params["dhe3_fuel_ratio"],
+-        pb11_fuel_ratio=params["pb11_fuel_ratio"],
+-        **base_frac_kw,
+-    )
++    # Neutron wall loading as a DENSITY cap, mirroring the Greenwald and beta
++    # caps. Without it the solver will happily return a small high-field machine
++    # whose first wall no material could survive. q_n_max = None keeps the old
++    # behaviour.
++    #
++    # q_n = P_fus / A_fw is monotone increasing in f_GW at fixed geometry and
++    # temperature, so the density that sits exactly on the cap is found by
++    # bisection. A single closed-form step f_GW * sqrt(cap / q_n) would be exact
++    # only if <sigma v>, Z_eff dilution and the radiated fraction were all
++    # density-independent; they are not, so iterate to a tolerance instead.
++    #
++    # The solved fraction is returned to the caller: it must reach the final
++    # forward pass, or the machine is SIZED against the cap but REPORTED at the
++    # unconstrained density and silently violates it.
++    _q_cap = params.get("q_n_max")
++    _f_gw = params["f_GW"]
++    ps = _fwd_at(R0, a, kappa, B0, T_e, _f_gw, params, fuel, M_ion, base_frac_kw)
++    if _q_cap and float(ps.wall_loading) > float(_q_cap):
++        lo_f, hi_f = params.get("f_GW_min", 0.05), _f_gw
++        for _ in range(_QN_BISECT_ITERS):
++            mid_f = 0.5 * (lo_f + hi_f)
++            if float(
++                _fwd_at(
++                    R0, a, kappa, B0, T_e, mid_f, params, fuel, M_ion, base_frac_kw
++                ).wall_loading
++            ) > float(_q_cap):
++                hi_f = mid_f
++            else:
++                lo_f = mid_f
++        # lo_f is the feasible side of the bracket. If even f_GW_min violates the
++        # cap this R0 is infeasible; the state is returned as-is (still violating)
++        # and the outer R0 bisection grows the machine until the cap can be met.
++        _f_gw = lo_f
++        ps = _fwd_at(R0, a, kappa, B0, T_e, _f_gw, params, fuel, M_ion, base_frac_kw)
+ 
+     # Solve the auxiliary heating from the confinement requirement so that
+     # H_factor (not a fixed p_input) sets the recirculating power.
+@@ -956,7 +992,7 @@ def _net_at_R0_T(R0, T_e, params, fuel):
+         **pb_frac_kw,
+     )
+ 
+-    return float(pt.p_net), float(ps.beta_N)
++    return float(pt.p_net), float(ps.beta_N), float(_f_gw)
+ 
+ 
+ def net_electric_at_R0(R0, params, fuel, return_state=False):
+@@ -973,7 +1009,7 @@ def net_electric_at_R0(R0, params, fuel, return_state=False):
+     invphi2 = (3 - 5**0.5) / 2  # 1/phi^2
+ 
+     def feasible_net(T):
+-        pn, beta = _net_at_R0_T(R0, T, params, fuel)
++        pn, beta, _ = _net_at_R0_T(R0, T, params, fuel)
+         if beta > beta_cap:
+             return -_BETA_PENALTY * (beta - beta_cap)
+         return pn
+@@ -1010,9 +1046,9 @@ def net_electric_at_R0(R0, params, fuel, return_state=False):
+     # the outer R0 bisection (it would read the point as failing the target and
+     # walk R0 too high). Apply a small tolerance: report true net power when beta
+     # is within tol of the cap; penalize only a real violation beyond it.
+-    pn, beta = _net_at_R0_T(R0, T_star, params, fuel)
++    pn, beta, f_gw_star = _net_at_R0_T(R0, T_star, params, fuel)
+     if return_state:
+-        return pn, T_star, beta
++        return pn, T_star, beta, f_gw_star
+     beta_tol = 1e-4 * beta_cap
+     if beta > beta_cap + beta_tol:
+         return -_BETA_PENALTY * (beta - beta_cap)
+@@ -1039,6 +1075,7 @@ class SizingResult:
+     a: float
+     B0: float
+     T_e: float
++    f_GW: float = None  # solved Greenwald fraction; below the input when q_n binds
+ 
+ 
+ def tokamak_size_from_power(params, fuel):
+@@ -1066,7 +1103,7 @@ def tokamak_size_from_power(params, fuel):
+             hi = mid
+     R0 = 0.5 * (lo + hi)
+     a = R0 / params["aspect_ratio"]
+-    _, T_star, _ = net_electric_at_R0(R0, params, fuel, return_state=True)
++    _, T_star, _, f_gw_star = net_electric_at_R0(R0, params, fuel, return_state=True)
+     B0 = b0_from_radial_build(
+         R0,
+         a,
+@@ -1075,5 +1112,6 @@ def tokamak_size_from_power(params, fuel):
+         params["ht_shield_t"],
+         params["structure_t"],
+         params["vessel_t"],
++        params.get("inboard_build_t"),
+     )
+-    return SizingResult(R0=R0, a=a, B0=B0, T_e=T_star)
++    return SizingResult(R0=R0, a=a, B0=B0, T_e=T_star, f_GW=f_gw_star)
+diff --git a/src/costingfe/model.py b/src/costingfe/model.py
+index da2eb8e..8eec8a2 100644
+--- a/src/costingfe/model.py
++++ b/src/costingfe/model.py
+@@ -11,6 +11,7 @@ from costingfe.defaults import (
+     POWER_CYCLE_DEFAULTS,
+     CostingConstants,
+     cc_float_fields,
++    cryo_specific_power,
+     get_magnet_properties,
+     load_costing_constants,
+     load_engineering_defaults,
+@@ -106,6 +107,15 @@ SIZING_FEATURES_ENABLED = False
+ # remain on disk but are unreachable through forward(). Flip to True to re-enable.
+ MODELS_0D_ENABLED = False
+ 
++# A spherical tokamak IS a tokamak for physics: same 0D model, same sizing
++# solve, same disruption term. It differs only in geometry (low aspect ratio,
++# high elongation), in having no central solenoid, and in running a thin
++# breeder-free inboard build. Anywhere the concept is tested for tokamak
++# physics, both members qualify.
++_TOKAMAK_LIKE = frozenset(
++    {ConfinementConcept.TOKAMAK, ConfinementConcept.SPHERICAL_TOKAMAK}
++)
++
+ 
+ def _core_lifetime_fpy(cc, fuel, q_n, lifetime_yr, availability):
+     """Fluence-based core lifetime [FPY]: Phi_max / q_n, clamped to [0.5,
+@@ -328,7 +338,7 @@ class CostModel:
+ 
+         # 0D dispatch: tokamak or mirror branch
+         use_0d = params.get("use_0d_model", False)
+-        if use_0d and self.concept == ConfinementConcept.TOKAMAK:
++        if use_0d and self.concept in _TOKAMAK_LIKE:
+             return self._power_balance_0d(params, n_mod)
+         if use_0d and self.concept == ConfinementConcept.MIRROR:
+             return self._power_balance_mirror_0d(params, n_mod)
+@@ -868,6 +878,12 @@ class CostModel:
+         params["plasma_t"] = result.a
+         params["B"] = result.B0
+         params["T_e"] = result.T_e
++        # The wall-load cap is enforced by lowering the Greenwald fraction inside
++        # the sizing solve. Without this line the plant is SIZED against the cap
++        # but the reported forward pass reruns at the unconstrained input f_GW,
++        # so the costed machine silently exceeds q_n_max.
++        if result.f_GW is not None:
++            params["f_GW"] = result.f_GW
+         self._last_R0 = result.R0  # exposed for inspection and integration tests
+         self._last_B0 = result.B0  # solved on-axis field, exposed for inspection
+ 
+@@ -1126,6 +1142,9 @@ class CostModel:
+             DriveMode.INDIRECT.value: params.get(
+                 "drive_coupling_indirect", self.cc.drive_coupling_indirect
+             ),
++            DriveMode.FAST_IGNITION.value: params.get(
++                "drive_coupling_fast_ignition", self.cc.drive_coupling_fast_ignition
++            ),
+         }[mode]
+ 
+     def _yield_from_e(self, params, e_driver_mj):
+@@ -1430,6 +1449,29 @@ class CostModel:
+             and "eta_pin" not in overrides
+         ):
+             params["eta_pin"] = self._laser_eta_pin(params)
++        # Cryoplant load follows the magnet's operating temperature. p_cryo in the
++        # concept YAML is calibrated for that concept's DEFAULT conductor, so the
++        # correction below is exactly 1.0 there and only bites when the analyst
++        # swaps conductor -- an LTS magnet at 4.5 K needs ~4.7x the wall-plug
++        # power of an HTS magnet at 20 K for the same heat load. Applied before
++        # the power balance so recirculating power and C220302 stay consistent.
++        # See defaults.cryo_specific_power for the correlation and its sources.
++        _cm = params.get("coil_material")
++        _cm_default = self._eng_defaults.get("coil_material")
++        if _cm is not None and _cm_default is not None and _cm != _cm_default:
++            _sp = cryo_specific_power(
++                get_magnet_properties(_cm).cryo_temp_k,
++                self.cc.cryo_ambient_temp_k,
++                self.cc.cryo_carnot_efficiency,
++            )
++            _sp_ref = cryo_specific_power(
++                get_magnet_properties(_cm_default).cryo_temp_k,
++                self.cc.cryo_ambient_temp_k,
++                self.cc.cryo_carnot_efficiency,
++            )
++            if _sp_ref > 0:
++                params["p_cryo"] = params["p_cryo"] * _sp / _sp_ref
++
+         params.update(
+             dict(
+                 net_electric_mw=net_electric_mw,
+@@ -1552,7 +1594,7 @@ class CostModel:
+         # 0D radial build: derive thicknesses from fuel before geometry
+         self._plasma_state = None
+         use_0d = params.get("use_0d_model", False)
+-        if use_0d and self.concept == ConfinementConcept.TOKAMAK:
++        if use_0d and self.concept in _TOKAMAK_LIKE:
+             rb_derived = derive_radial_build(
+                 self.fuel,
+                 blanket_t=overrides.get("blanket_t"),
+@@ -1572,7 +1614,9 @@ class CostModel:
+         # DT/DD to None -> full radiation model).
+         # T brackets are concept-specific: tokamak uses _T_BRACKET_DEFAULTS;
+         # the mirror bracket lives inside mirror_0d_inverse (_T_BRACKET_MIRROR).
+-        _0d_concepts = {ConfinementConcept.TOKAMAK, ConfinementConcept.MIRROR}
++        _0d_concepts = {ConfinementConcept.TOKAMAK,
++                        ConfinementConcept.SPHERICAL_TOKAMAK,
++                        ConfinementConcept.MIRROR}
+         if (use_0d or params.get("size_from_power", False)) and (
+             self.concept in _0d_concepts
+         ):
+@@ -1580,7 +1624,7 @@ class CostModel:
+                 params["Z_eff"] = z_eff_fuel(
+                     self.fuel, params["dhe3_fuel_ratio"], params["pb11_fuel_ratio"]
+                 ) + (params["Z_eff"] - 1.0)
+-                if self.concept == ConfinementConcept.TOKAMAK:
++                if self.concept in _TOKAMAK_LIKE:
+                     if "T_min" not in overrides:
+                         params["T_min"] = _T_BRACKET_DEFAULTS[self.fuel][0]
+                     if "T_max" not in overrides:
+@@ -1592,7 +1636,7 @@ class CostModel:
+         # Layer 2: Power balance (dispatched by family), or sizing solve.
+         solved_n_mod = None
+         if params.get("size_from_power", False):
+-            if self.concept == ConfinementConcept.TOKAMAK:
++            if self.concept in _TOKAMAK_LIKE:
+                 pinned = [
+                     k for k in ("R0", "plasma_t", "b_center", "B") if k in overrides
+                 ]
+@@ -1857,6 +1901,9 @@ class CostModel:
+                     self.cc.neutron_wall_load_max_mw_m2,
+                 ),
+             )
++        for _k in ("inboard_build_t", "inboard_breeder"):
++            if _k in params:
++                rb_params[_k] = params[_k]
+         rb = RadialBuild(**rb_params)
+         geo = compute_geometry(rb, self.concept)
+ 
+@@ -1903,6 +1950,7 @@ class CostModel:
+                 n_mod,
+                 self.fuel,
+                 coil_material,
++                machine_envelope_m3=float(geo.envelope_vol),
+             ),
+         )
+         if "CAS21" in co:
+@@ -1932,6 +1980,7 @@ class CostModel:
+         # (central vs plug field genuinely differ).
+         if self.concept in (
+             ConfinementConcept.TOKAMAK,
++            ConfinementConcept.SPHERICAL_TOKAMAK,
+             ConfinementConcept.STELLARATOR,
+         ):
+             b_center = params["B"]
+@@ -2168,26 +2217,42 @@ class CostModel:
+         # Apply disruption penalty for tokamak 0D/sizing runs only.
+         # MirrorPlasmaState has no disruption_rate field; guard by concept so
+         # a mirror 0D run never reaches the tokamak-specific penalty path.
+-        # Steady-state MFE families derive core lifetime from the neutron wall
+-        # loading (fluence basis); IFE/MIF keep the fixed per-fuel constant.
++        # Both MFE and IFE/MIF derive core lifetime from the neutron wall loading
++        # (fluence basis): the first wall fails at a fixed cumulative dose, so the
++        # replacement interval scales as 1/q_n. A big low-rep IFE chamber runs at
++        # a low wall load and lasts ~plant life; a small high-rep chamber sits at
++        # the wall-load floor and wears fastest -- a flat per-fuel FPY constant
++        # (the old IFE/MIF path) wrongly over-charged replacement at low rep.
+         # pt.p_neutron and geo.firstwall_area are both per-module, so q_n needs
+-        # no n_mod scaling.
++        # no n_mod scaling. jnp.maximum on the area/f_wall is a defensive guard;
++        # aneutronic fuels clamp to plant life via vanishing p_neutron (q_n -> 0).
+         if self.family == ConfinementFamily.STEADY_STATE:
+-            # jnp.maximum on the area is a defensive guard against any concept
+-            # reporting firstwall_area=0 (none currently do; all steady-state
+-            # concepts get a strictly positive area in geometry.py). Note that
+-            # a near-zero area would drive q_n up, shortening lifetime -- the
+-            # opposite of clamping. Aneutronic steady-state fuels (p-B11,
+-            # D-He3) clamp to plant life via vanishing p_neutron (q_n -> 0),
+-            # not via the area.
+             q_n = pt.p_neutron / jnp.maximum(geo.firstwall_area, 1e-6)
+-            core_lt = _core_lifetime_fpy(cc, self.fuel, q_n, lifetime_yr, availability)
++            # The first wall fails where the flux is HIGHEST, but the line above
++            # is a plant average (p_neutron / total area). Phi_max = 18 MW yr/m^2
++            # is anchored to the ARIES PEAK loading (5.3 MW/m^2 -> 3 FPY), so
++            # dividing it by an average over-credits blanket life by the neutron
++            # wall-load peaking factor. Tokamak NWL peaking is ~1.3-1.4 (outboard
++            # midplane); a stellarator's is flatter. Defaults to 1.0 so every
++            # existing calibration is untouched -- set it explicitly to charge
++            # replacement on a consistent peak basis.
++            q_n = q_n * params.get("nwl_peaking_factor", 1.0)
+         else:
+-            core_lt = cc.core_lifetime(self.fuel)
++            # IFE/MIF: the wall_improvement_factor (thick-liquid protection /
++            # advanced materials) raises the tolerable areal fluence, extending
++            # the interval -- the same f_wall that shrinks the chamber in
++            # geometry.chamber_radius_m. Thick-liquid walls -> ~plant life.
++            f_wall = params.get(
++                "wall_improvement_factor", cc.wall_improvement_dry
++            )
++            q_n = pt.p_neutron / (
++                jnp.maximum(geo.firstwall_area, 1e-6) * jnp.maximum(f_wall, 1e-6)
++            )
++        core_lt = _core_lifetime_fpy(cc, self.fuel, q_n, lifetime_yr, availability)
+         avail_eff = availability
+         if (
+             self._plasma_state is not None
+-            and self.concept == ConfinementConcept.TOKAMAK
++            and self.concept in _TOKAMAK_LIKE
+         ):
+             dm = DisruptionModel(
+                 rate_base=params["disruption_rate_base"],
+@@ -2516,6 +2581,10 @@ class CostModel:
+             # Power-to-geometry sizing (TOKAMAK)
+             "size_from_power",
+             "optimize_lcoe",
++            "inboard_build_t",
++            "inboard_breeder",
++            "q_n_max",
++            "nwl_peaking_factor",
+             "aspect_ratio",
+             "beta_N_max",
+             "H_factor",
+diff --git a/src/costingfe/types.py b/src/costingfe/types.py
+index a9e6992..73a4f3e 100644
+--- a/src/costingfe/types.py
++++ b/src/costingfe/types.py
+@@ -9,6 +9,7 @@ class ConfinementFamily(Enum):
+ 
+ class ConfinementConcept(Enum):
+     TOKAMAK = "tokamak"
++    SPHERICAL_TOKAMAK = "spherical_tokamak"
+     STELLARATOR = "stellarator"
+     MIRROR = "mirror"
+     STEADY_FRC = "steady_frc"
+@@ -87,11 +88,17 @@ class DriveMode(Enum):
+     INDIRECT: laser -> hohlraum -> X-rays -> capsule; most driver energy is lost
+       to X-ray conversion + hohlraum re-absorption, so the least fuel is
+       assembled per joule -> lowest gain (and the hohlraum raises target cost).
++    FAST_IGNITION: separate compression + short-pulse igniter decouples fuel
++      assembly from ignition, so no driver energy is spent forming a central hot
++      spot -> higher gain at the same driver energy. Modeled as an effective
++      coupling > 1 (a gain credit, ~1.5x central-hot-spot; Tabak 1994, Atzeni).
++      The default for any D-T fast-ignition concept (proton/electron FI).
+     """
+ 
+     DIRECT = "direct"
+     HYBRID = "hybrid"
+     INDIRECT = "indirect"
++    FAST_IGNITION = "fast_ignition"
+ 
+ 
+ class TargetCostMode(Enum):
+@@ -114,6 +121,7 @@ class TargetCostMode(Enum):
+ 
+ CONCEPT_TO_FAMILY = {
+     ConfinementConcept.TOKAMAK: ConfinementFamily.STEADY_STATE,
++    ConfinementConcept.SPHERICAL_TOKAMAK: ConfinementFamily.STEADY_STATE,
+     ConfinementConcept.STELLARATOR: ConfinementFamily.STEADY_STATE,
+     ConfinementConcept.MIRROR: ConfinementFamily.STEADY_STATE,
+     ConfinementConcept.STEADY_FRC: ConfinementFamily.STEADY_STATE,

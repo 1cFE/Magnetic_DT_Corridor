@@ -1,0 +1,4 @@
+# The reproduction patch must keep its exact bytes: git's CRLF conversion on
+# Windows checkout would make `git apply` fail on Linux and macOS.
+*.patch -text
+* text=auto eol=lf
