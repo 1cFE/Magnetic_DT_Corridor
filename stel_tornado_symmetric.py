@@ -70,7 +70,7 @@ SPEC = [
     ("Book life",            "life",  30.0, 80.0,          "{:.0f} yr", False),
     ("Construction",         "constr", 8.0, 2.5,           "{:.1f} yr", False),
     ("Availability",         "av",    0.85, 0.98,          "{:.3f}",   True),
-    ("Fixed O&M",            "om",     1.0, 0.45,          "×{:.2f}",  True),
+    ("Fixed O&M",            "om",     1.0, 0.0855,          "×{:.2f}",  True),
     ("Indirect cost",        "indir", 0.20, 0.08,          "{:.0%}",   True),
     ("REBCO $/kA·m",       "coil",   1.0, 0.20,          "×{:.2f}",  False),
     ("Coil markup",          "coil",   1.0, MARKUP_PARITY, "×{:.2f}",  False),

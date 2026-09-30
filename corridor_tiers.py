@@ -60,14 +60,23 @@ def coil_mult(rebco, planar=False, concept="stellarator"):
 # lever names.  See the markdown appendices for the citation behind each entry.
 # Each stop is the best value some real project has held at that grade; see the
 # markdown appendices for the citation behind every entry.
+#
+# Indirects are the exception: the nominal fraction is held at the NETL 20% at
+# every rung and only the build time moves what is actually charged, because
+# CAS30 = fraction x CAS20 x (construction_time / 6 yr) already carries the
+# schedule.  Effective shares are 20% at a 6 yr build, 16.7% at 5 yr, 10.8% at
+# 3.25 and 8.3% at 2.5 -- the same convention as the aneutronic studies.
 T1_REC = {"av": 0.92, "life": 60.0, "constr": 5.0,
-          "indir": 0.16, "om": 0.69}
-T2_EXT = {"wacc": 0.05, "indir": 0.12,
+          "indir": 0.20, "om": 0.69}
+T2_EXT = {"wacc": 0.05, "indir": 0.20,
           "av": 0.95, "life": 80.0, "constr": 3.25, "flu": 2.0,
           "om": 0.45}
 # Brownfield siting is a scenario choice, not an evidence grade: one package
 # (buildings, interconnection, heat rejection) that the tier-3 preset adopts.
-T3_SPEC = {"wacc": 0.03, "indir": 0.08,
+# Tier 3 also replaces the fleet-staffing O&M step with lights-out operation
+# (~10 FTE, fixed O&M x 0.0855), the same ruling the pulsed ladder (PT3) makes,
+# so the two D-T ladders and the byproduct plant ladder share one convention.
+T3_SPEC = {"wacc": 0.03, "indir": 0.20, "om": 0.0855,
            "av": 0.98, "constr": 2.5, "flu": 3.0, "disr": 0.167,
            "bld": 0.65, "elec": 0.40, "hr": 0.60}
 
@@ -146,19 +155,19 @@ def plcoe(concept, ri, L, eta_f, wear_f):
 
 
 PT1 = {"av": 0.92, "life": 60.0, "constr": 5.0,
-       "indir": 0.16, "om": 0.69}
+       "indir": 0.20, "om": 0.69}
 # Driver capital, target factory and target opex have a sourced baseline and a
 # sourced endpoint but nothing in between, so the tier-2 value is simply the
 # midpoint of the two -- an increment between baseline and ceiling, not a
 # separately sourced operating point.  Same convention as the wall-plug and
 # shot-life increments above.
-PT2 = {"wacc": 0.05, "indir": 0.12,
+PT2 = {"wacc": 0.05, "indir": 0.20,
        "av": 0.95, "life": 80.0, "constr": 3.25,
        "sco2": True, "om": 0.45, "tfac": 0.825,
        "drv": {"BLF": 0.834, "Xcimer": 0.813},
        "tgt": {"BLF": 0.55, "Xcimer": 0.75}}
 # tier 3 replaces the fleet-staffing O&M step with lights-out operation (~10 FTE)
-PT3 = {"wacc": 0.03, "indir": 0.08,
+PT3 = {"wacc": 0.03, "indir": 0.20,
        "av": 0.98, "constr": 2.5, "om": 0.0855, "tfac": 0.65,
        "drv": {"BLF": 0.667, "Xcimer": 0.625},
        "tgt": {"BLF": 0.10, "Xcimer": 0.50},
