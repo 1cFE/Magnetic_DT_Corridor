@@ -8,18 +8,20 @@ This is the analysis code behind the 1cFE dispatch *Mature Magnetic D-T Corridor
 
 ## Result
 
-A mature D-T magnetic plant does not reach 1 ¢/kWh. It reaches **2.5 ¢/kWh**, and only
+A mature D-T magnetic plant does not reach 1 ¢/kWh. It reaches **2.6 ¢/kWh**, and only
 on assumptions with no mechanism behind them.
 
 | Evidence tier | 1 GWe | 3 GWe |
 |---|---|---|
 | 0 · design basis | $227.5 | $202.5 |
-| 1 · applicable record | $154.9 | $140.8 |
-| 2 · extrapolation with a known mechanism | $43.1 | $42.7 |
-| 3 · speculation, no mechanism | **$25.2** | **$24.8** |
+| 1 · applicable record | $158.6 | $144.1 |
+| 2 · extrapolation with a known mechanism | $44.4 | $43.9 |
+| 3 · speculation, no mechanism | **$25.9** | **$25.5** |
 
 LCOE in $/MWh. Tiers are cumulative — each carries every entry below it. The 1 ¢/kWh
 target is $10/MWh.
+
+Two conventions were brought to the published article on 30 September 2026. The nominal indirect-cost fraction is held at the NETL 20% on every rung and only the build time moves what is charged (CAS30 = fraction × CAS20 × build / 6 yr, so 20 / 16.7 / 10.8 / 8.3% effective at 6 / 5 / 3.25 / 2.5 years), the convention the aneutronic studies use; the earlier 20 / 16 / 12 / 8% ladder charged the schedule twice. Tier 3 holds the tier-2 fixed-O&M reduction (−55%); lights-out operation (about ten staff) is credited in none of the three D-T ladders, so they share one tier-3 O&M convention. Both are in `corridor_tiers.py`; the tornado applies the same deepest values one at a time.
 
 ## Reproducing
 
@@ -41,7 +43,8 @@ python build_stel_anchors.py                # solve the stellarator at 1 and 3 G
 python build_ct_corridor.py                 # compact-tokamak reference sweep
 python corridor_tiers.py                    # evidence ladder -> corridor_tiers.json
 python tier_ladder_figs.py                  # figures/*_tier_ladder.png
-python stel_tornado_plot.py                 # figures/stel_tornado.png
+python stel_tornado_plot.py                 # figures/stel_tornado.png; the article's
+                                            # fig_tornado_crop.png is its top 965 px
 ```
 
 `build_stel_anchors.py` should print:
