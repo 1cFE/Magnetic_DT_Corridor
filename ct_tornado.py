@@ -28,7 +28,7 @@ M = dict(inflation=0.02, fluence=18.0, indir=0.2, ref_constr=6.0, ref_p=1000.0,
 AGG = dict(wacc=0.03, life=60.0, indir=0.10, constr=3.0, av=0.95, flu=3.0,
            disr=0.167, coil=0.60, heat=0.40, fw=0.70, shield=0.70, vessel=0.60,
            assembly=0.65, rh=0.55, fuelh=0.65, coolant=0.60, iandc=0.60,
-           startup=0.33, bld=0.65, elec=0.40, hr=0.60, om=0.0855, ins=0.33,
+           startup=0.33, bld=0.65, elec=0.40, hr=0.60, om=0.45, ins=0.33,
            decom=0.50)
 BASE = dict(wacc=M["wacc"], life=M["life"], indir=M["indir"], constr=None,
             av=M["av"], flu=1.0, disr=1.0, coil=1.0, heat=1.0, fw=1.0,
@@ -45,7 +45,7 @@ LABEL = dict(wacc="WACC 7%->3%", life="Plant life 30->60 yr",
              fuelh="Tritium plant -35%", coolant="Coolant loops -40%",
              iandc="I&C -40%", startup="Start-up cost -67%",
              bld="Buildings -35%", elec="Electrical plant -60%",
-             hr="Heat rejection -40%", om="O&M -91%", ins="Insurance -67%",
+             hr="Heat rejection -40%", om="O&M -55%", ins="Insurance -67%",
              decom="Decommissioning -50%")
 
 

@@ -73,10 +73,9 @@ T2_EXT = {"wacc": 0.05, "indir": 0.20,
           "om": 0.45}
 # Brownfield siting is a scenario choice, not an evidence grade: one package
 # (buildings, interconnection, heat rejection) that the tier-3 preset adopts.
-# Tier 3 also replaces the fleet-staffing O&M step with lights-out operation
-# (~10 FTE, fixed O&M x 0.0855), the same ruling the pulsed ladder (PT3) makes,
-# so the two D-T ladders and the byproduct plant ladder share one convention.
-T3_SPEC = {"wacc": 0.03, "indir": 0.20, "om": 0.0855,
+# Fixed O&M stays at the tier-2 -55%: lights-out operation is not credited in
+# any of the three D-T ladders.
+T3_SPEC = {"wacc": 0.03, "indir": 0.20,
            "av": 0.98, "constr": 2.5, "flu": 3.0, "disr": 0.167,
            "bld": 0.65, "elec": 0.40, "hr": 0.60}
 
@@ -166,9 +165,11 @@ PT2 = {"wacc": 0.05, "indir": 0.20,
        "sco2": True, "om": 0.45, "tfac": 0.825,
        "drv": {"BLF": 0.834, "Xcimer": 0.813},
        "tgt": {"BLF": 0.55, "Xcimer": 0.75}}
-# tier 3 replaces the fleet-staffing O&M step with lights-out operation (~10 FTE)
+# Tier 3 holds the tier-2 fixed-O&M reduction (-55%): lights-out operation (~10 FTE)
+# is not credited in any of the three D-T ladders (mature, pulsed, byproduct), so
+# they share one tier-3 O&M convention.
 PT3 = {"wacc": 0.03, "indir": 0.20,
-       "av": 0.98, "constr": 2.5, "om": 0.0855, "tfac": 0.65,
+       "av": 0.98, "constr": 2.5, "om": 0.45, "tfac": 0.65,
        "drv": {"BLF": 0.667, "Xcimer": 0.625},
        "tgt": {"BLF": 0.10, "Xcimer": 0.50},
        "bld": 0.65, "elec": 0.40, "hr": 0.60}
